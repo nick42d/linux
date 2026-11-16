@@ -183,7 +183,7 @@ impl<'init, S: DeviceBuilderState> DeviceBuilder<'init, S> {
                     }
                     colors[subled.color as usize] = true;
                 }
-                let subleds_box = KBox::pin_slice(
+                let subleds_box = KBox::pin_slice::<_, _, Error, _>(
                     |index| Ok::<_, Error>(subleds[index].clone()),
                     subleds.len(),
                     GFP_KERNEL,
