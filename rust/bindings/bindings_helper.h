@@ -94,6 +94,7 @@
 #include <linux/tracepoint.h>
 #include <linux/usb.h>
 #include <linux/wait.h>
+#include <linux/wmi.h>
 #include <linux/workqueue.h>
 #include <linux/xarray.h>
 #include <net/genetlink.h>
