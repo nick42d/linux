@@ -7,6 +7,8 @@
 use crate::{
     bindings,
     device,
+    device_id::RawDeviceId,
+    prelude::*,
     sync::aref::AlwaysRefCounted,
     types::Opaque, //
 };
@@ -14,6 +16,64 @@ use core::{
     marker::PhantomData,
     ptr::NonNull, //
 };
+
+/// IdTable type for WMI drivers.
+pub type IdTable = &'static dyn crate::device_id::IdTable<DeviceId, ()>;
+
+/// A WMI device ID wrapping [`struct wmi_device_id`].
+///
+/// [`struct wmi_device_id`]: srctree/include/linux/device-id/wmi.h
+///
+/// # Invariants
+/// `self.0.guid_string` is a valid, null-terminated string of length [`bindings::UUID_STRING_LEN`].
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct DeviceId(bindings::wmi_device_id);
+// SAFETY: `DeviceId` is a `#[repr(transparent)]` wrapper of `wmi_device_id`.
+// `wmi_device_id` does not have any invariants, so it's safe to transmute to it.
+unsafe impl RawDeviceId for DeviceId {
+    type RawType = bindings::wmi_device_id;
+}
+impl DeviceId {
+    const WMI_UUID_LEN: usize = crate::num::casts::u32_as_usize(bindings::UUID_STRING_LEN);
+    /// Creates a new [`DeviceId`].
+    ///
+    /// Fails at compile time if `guid.len()` is not [`bindings::UUID_STRING_LEN`].
+    #[inline(always)]
+    pub const fn new(guid: &'static CStr) -> Self {
+        let src = guid.to_bytes_with_nul();
+        // NOTE: Function is marked `#[inline(always)]` to help compiler optimise the error path.
+        build_assert!(
+            src.len() == Self::WMI_UUID_LEN + 1,
+            "WMI DeviceId length incorrect"
+        );
+        let mut id: bindings::wmi_device_id = pin_init::zeroed();
+        // TODO: Upgrade to core::slice::copy_from_slice(src) once rustc>=1.87
+        let mut i = 0;
+        while i < src.len() {
+            id.guid_string[i] = src[i];
+            i += 1;
+        }
+        // INVARIANT:
+        // - All bytes were copied from a Rust `&'static CStr`.
+        // - The build assert above guarantees `id` to meet the length invariant.
+        Self(id)
+    }
+}
+
+/// Create a WMI [`IdTable`] with an "alias" for modpost.
+#[macro_export]
+macro_rules! wmi_device_table {
+    ($table_name:ident, [$($id:expr),* $(,)?]) => {
+        $crate::module_device_table!(
+            "wmi",
+            $crate::wmi::DeviceId,
+            $table_name,
+            @none,
+            [$($id),*]
+        );
+    };
+}
 
 /// A WMI bus device ([`struct wmi_device`]).
 ///
