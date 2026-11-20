@@ -1059,6 +1059,23 @@ config OXP_EC
 
 source "drivers/platform/x86/tuxedo/Kconfig"
 
+config CLEVO_LAPTOP
+	tristate "Clevo Laptop Platform Driver"
+	depends on RUST
+	depends on ACPI_WMI=y
+	depends on DMI
+	depends on LEDS_CLASS
+	help
+	  This driver provides platform support for Clevo barebones and
+	  rebranded laptops (Tuxedo, Metabox, Sager, XMG, etc.).
+	  Currently only Clevo NLx0AU boards (e.g. Metabox Edge NL57AU)
+	  with a 5-step white keyboard backlight are supported over WMI.
+	  It is intended to be extended with additional Clevo models and
+	  EC features over time.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called clevo-laptop.
+
 endif # X86_PLATFORM_DEVICES
 
 config P2SB
