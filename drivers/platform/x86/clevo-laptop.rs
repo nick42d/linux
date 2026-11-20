@@ -13,6 +13,10 @@ use kernel::{
     device,
     dmi,
     prelude::*,
+    time::{
+        delay::fsleep,
+        Delta, //
+    },
     wmi, //
 };
 
@@ -24,7 +28,12 @@ const CLEVO_WMI_METHOD_GUID: &CStr = c"ABBC0F6D-8EA1-11D1-00A0-C90629100000";
 /// DMI board name allowlist, restricted to tested boards since the WMI GUID is not
 /// unique.
 const SUPPORTED_BOARDS: &[&CStr] = &[c"NLx0AU"];
+const CLEVO_EC_CMD_GET_SPECS: u8 = 0x0D;
 const CLEVO_EC_CMD_GET_BIOS_FEATURES_1: u8 = 0x52;
+const CLEVO_EC_CMD_GET_BIOS_FEATURES_2: u8 = 0x7A;
+const CLEVO_BIOS_FEATURE_CODE_WHITE_ONLY_KB: u32 = 0x4000_0000;
+const CLEVO_BIOS_FEATURE_CODE_3_ZONE_RGB_KB: u32 = 0x0040_0000;
+const CLEVO_BIOS_FEATURE_CODE_WHITE_ONLY_KB_MAX_5: u32 = 0x4000;
 const CLEVO_EC_WMI_INSTANCE: u8 = 0;
 
 module! {
@@ -89,6 +98,17 @@ impl wmi::Driver for WmiDriver {
 
             backend.query(GetBiosFeatures1).map_err(|_| ENODEV)?;
 
+            // MVP: Only the NL57AU 5-step white backlight is supported.
+            if backend.detect_backlight_type()? != Some(KbBacklightType::FixedColor) {
+                return Err(ENODEV);
+            }
+            let has_white_5 = backend
+                .query(GetBiosFeatures2)
+                .is_ok_and(|feat2| feat2.has_white_only_kb_max_5());
+            if !has_white_5 {
+                return Err(ENODEV);
+            }
+
             Ok(try_pin_init!(WmiDriver {}))
         })
     }
@@ -127,6 +147,61 @@ impl<'a> EcInterface<'a> {
             }
         }
     }
+    /// Detect backlight type e.g white.
+    fn detect_backlight_type(&self) -> Result<Option<KbBacklightType>> {
+        const MAX_RETRIES: usize = 3;
+        const RETRY_SLEEP_DURATION: Delta = Delta::from_millis(50);
+
+        for attempt in 0..MAX_RETRIES {
+            if attempt != 0 {
+                pr_debug!(
+                    "KbBacklightType::None probably wrong, retrying - attempt {} of {}\n",
+                    attempt,
+                    MAX_RETRIES - 1
+                );
+                fsleep(RETRY_SLEEP_DURATION);
+            }
+            if let Ok(specs) = self.query(GetSpecs) {
+                let backlight_type = specs.kb_backlight_type();
+                if backlight_type != Ok(None) {
+                    return backlight_type.map_err(|_| ENODEV);
+                }
+            }
+        }
+
+        // Check for devices <= Intel 8th gen (only white only, 3 zone RGB,
+        // or no backlight on these devices)
+        let feat1 = self.query(GetBiosFeatures1).map_err(|_| ENODEV)?;
+        if feat1.has_3_zone_rgb_kb() {
+            Ok(Some(KbBacklightType::ThreeZoneRgb))
+        } else if feat1.has_white_only_kb() {
+            Ok(Some(KbBacklightType::FixedColor))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+/// Keyboard backlight type - e.g Fixed Color
+#[derive(PartialEq)]
+#[repr(u8)]
+enum KbBacklightType {
+    FixedColor = 0x01,
+    ThreeZoneRgb = 0x02,
+    OneZoneRgb = 0x06,
+    PerKeyRgb = 0xF3,
+}
+impl KbBacklightType {
+    const fn from_raw(raw: u8) -> Result<Option<Self>, u8> {
+        match raw {
+            0x01 => Ok(Some(KbBacklightType::FixedColor)),
+            0x02 => Ok(Some(KbBacklightType::ThreeZoneRgb)),
+            0x06 => Ok(Some(KbBacklightType::OneZoneRgb)),
+            0xF3 => Ok(Some(KbBacklightType::PerKeyRgb)),
+            0x00 => Ok(None),
+            other => Err(other),
+        }
+    }
 }
 
 /// Args for a command sent to the EC.
@@ -145,7 +220,11 @@ impl EcMethodArgs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GetSpecs;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GetBiosFeatures1;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GetBiosFeatures2;
 
 impl EcQuery for GetBiosFeatures1 {
     type Output = BiosFeatures1;
@@ -163,10 +242,56 @@ impl EcQuery for GetBiosFeatures1 {
         Ok(feat)
     }
 }
+impl EcQuery for GetBiosFeatures2 {
+    type Output = BiosFeatures2;
+    fn cmd(&self) -> u8 {
+        CLEVO_EC_CMD_GET_BIOS_FEATURES_2
+    }
+    fn args(&self) -> EcMethodArgs {
+        EcMethodArgs::Scalar(0)
+    }
+    fn deserialize_output(output: &[u8]) -> Result<Self::Output> {
+        let (feat, _) = BiosFeatures2::read_from_prefix(output).map_err(|_| ENODATA)?;
+        Ok(feat)
+    }
+}
+impl EcQuery for GetSpecs {
+    type Output = Specs;
+    fn cmd(&self) -> u8 {
+        CLEVO_EC_CMD_GET_SPECS
+    }
+    fn args(&self) -> EcMethodArgs {
+        EcMethodArgs::Scalar(0)
+    }
+    fn deserialize_output(output: &[u8]) -> Result<Self::Output> {
+        let (specs, _) = Specs::read_from_prefix(output).map_err(|_| ENODATA)?;
+        Ok(specs)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes)]
 struct BiosFeatures1(u32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes)]
+struct BiosFeatures2(u32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromBytes)]
+struct Specs([u8; 16]);
 
 impl BiosFeatures1 {
     const INVALID: Self = Self(0xFFFF_FFFF);
+    const fn has_white_only_kb(self) -> bool {
+        (self.0 & CLEVO_BIOS_FEATURE_CODE_WHITE_ONLY_KB) != 0
+    }
+    const fn has_3_zone_rgb_kb(self) -> bool {
+        (self.0 & CLEVO_BIOS_FEATURE_CODE_3_ZONE_RGB_KB) != 0
+    }
+}
+impl BiosFeatures2 {
+    const fn has_white_only_kb_max_5(self) -> bool {
+        (self.0 & CLEVO_BIOS_FEATURE_CODE_WHITE_ONLY_KB_MAX_5) != 0
+    }
+}
+impl Specs {
+    const fn kb_backlight_type(&self) -> Result<Option<KbBacklightType>, u8> {
+        KbBacklightType::from_raw(self.0[0x0F])
+    }
 }
