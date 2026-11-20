@@ -158,6 +158,9 @@ obj-$(CONFIG_SILICOM_PLATFORM)		+= silicom-platform.o
 # TUXEDO
 obj-y					+= tuxedo/
 
+# Clevo
+obj-$(CONFIG_CLEVO_LAPTOP)		+= clevo-laptop.o
+
 # Winmate
 obj-$(CONFIG_WINMATE_FM07_KEYS)		+= winmate-fm07-keys.o
 
